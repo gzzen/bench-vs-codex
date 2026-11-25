@@ -10,7 +10,7 @@ The runner does not use Harbor.
 
 ## Setup
 
-- Python 3.11 or newer for `benchmark.py` (standard library only).
+- Python 3.11 or newer for `cli.py` (standard library only).
 - A local MMLongBench-Doc checkout at `../MMLongBench-Doc`. Pass `--data` to
   use another data directory or question JSON file.
 - A PaperQA checkout at `../paper-qa` with its `.venv` installed (`uv sync
@@ -31,32 +31,32 @@ The runner does not use Harbor.
 Validate a few dataset records without making model calls:
 
 ```bash
-python3 benchmark.py --dry-run --limit 5
+python3 cli.py --dry-run --limit 5
 ```
 
 Run only questions whose evidence sources do not contain `Figure` or `Chart`:
 
 ```bash
-python3 benchmark.py --profile without-figures-and-charts --dry-run
-python3 benchmark.py --profile without-figures-and-charts --limit 5
+python3 cli.py --profile without-figures-and-charts --dry-run
+python3 cli.py --profile without-figures-and-charts --limit 5
 ```
 
 Run one system on plain-text questions:
 
 ```bash
-python3 benchmark.py --profile plain-text --system codex --limit 1
+python3 cli.py --profile plain-text --system codex --limit 1
 ```
 
 Choose 10 random questions from the plain-text profile:
 
 ```bash
-python3 benchmark.py --profile plain-text --limit 10 --random
+python3 cli.py --profile plain-text --limit 10 --random
 ```
 
 Run the complete dataset with both systems:
 
 ```bash
-python3 benchmark.py
+python3 cli.py
 ```
 
 That command schedules all 1,082 questions in the local dataset, so use a
@@ -124,6 +124,7 @@ answer, `evidence_sources`, `evidence_pages`, answer format, document type,
 dataset index, raw system answer, complete response, extracted answer, model
 settings, timings, errors, `exact_match`, and `semantic_match`. The CLI table
 shows scores as `EM` and `SM` (`yes`, `no`, or `-` if unavailable). Process logs
+from PaperQA and Codex update a single terminal line while each system runs and
 are kept beside the case folders. Use `--work-dir` and `--output` to choose
 other locations.
 
@@ -139,7 +140,8 @@ assessment and can be wrong; review borderline cases manually.
 
 ## Code layout
 
-- `benchmark.py`: CLI and main orchestration, including result recording.
+- `cli.py`: argument parsing, run setup, and CLI result rendering.
+- `benchmark.py`: reusable execution core and result recording.
 - `benchmark_data.py`: MMLongBench-Doc loading, path resolution, profiles, and
   filters.
 - `benchmark_evaluation.py`: normalization, answer extraction, and semantic

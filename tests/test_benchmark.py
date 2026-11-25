@@ -2,12 +2,13 @@ import json
 import io
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from benchmark import main, print_table, run_cases, select_cases
+from benchmark import run_cases, select_cases
 from benchmark_data import (
     Case, filter_cases, load_cases, load_run_config, questions_path,
 )
@@ -15,12 +16,53 @@ from benchmark_evaluation import (
     extract_answer, judge_semantic_match, load_project_env, normalize_answer, score,
 )
 from benchmark_systems import (
-    PaperQAEmptyDocsError, codex_provider_overrides, codex_settings, run_codex,
-    run_paperqa,
+    PaperQAEmptyDocsError, _run_command, _show_live_log, codex_provider_overrides,
+    codex_settings, run_codex, run_paperqa,
 )
+from cli import main, print_table
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_live_logs_replace_one_terminal_line(self):
+        class TtyBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TtyBuffer()
+        with patch("benchmark_systems.sys.stdout", output):
+            with patch(
+                "benchmark_systems.shutil.get_terminal_size",
+                return_value=os.terminal_size((40, 24)),
+            ):
+                _show_live_log("codex stdout", "first update\n")
+                _show_live_log("codex stderr", "\x1b[31msecond update that is too long\033[0m\n")
+        text = output.getvalue()
+        self.assertNotIn("\n", text)
+        self.assertEqual(text.count("\r"), 2)
+        visible_lines = text.replace("\033[K", "").split("\r")
+        self.assertLessEqual(max(len(line) for line in visible_lines), 40)
+        self.assertIn("...", text)
+
+    def test_run_command_streams_capture_to_log_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log_prefix = root / "paperqa" / "process"
+            log_prefix.parent.mkdir()
+            stdout = _run_command([
+                sys.executable, "-c",
+                "import sys; print('stdin=' + sys.stdin.read()); "
+                "print('paperqa error', file=sys.stderr)",
+            ], root, log_prefix, stdin="Question?")
+            self.assertEqual(stdout, "stdin=Question?\n")
+            self.assertEqual(
+                (root / "paperqa" / "process.stdout.log").read_text(encoding="utf-8"),
+                "stdin=Question?\n",
+            )
+            self.assertEqual(
+                (root / "paperqa" / "process.stderr.log").read_text(encoding="utf-8"),
+                "paperqa error\n",
+            )
+
     def test_project_env_loading_and_export_precedence(self):
         with tempfile.TemporaryDirectory() as temporary:
             env_file = Path(temporary) / ".env"
