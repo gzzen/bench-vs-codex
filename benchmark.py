@@ -112,6 +112,8 @@ def run_cases(
                     elapsed += f", extraction {summarizer_elapsed:.1f}s"
                 if judge_elapsed is not None:
                     elapsed += f", judge {judge_elapsed:.1f}s"
+                if semantic_match is not None:
+                    elapsed += f", correct: {'yes' if semantic_match else 'no'}"
                 print(
                     f"[{case_number}/{len(cases)}] {case.id} / {system} "
                     f"{outcome} ({elapsed})",

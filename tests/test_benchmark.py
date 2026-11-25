@@ -355,7 +355,11 @@ class BenchmarkTests(unittest.TestCase):
             self.assertIn("[1/1] case-one / paperqa running...", progress.getvalue())
             self.assertIn("[1/1] case-one / paperqa extracting...", progress.getvalue())
             self.assertIn("[1/1] case-one / paperqa judging...", progress.getvalue())
-            self.assertIn("[1/1] case-one / paperqa done (", progress.getvalue())
+            self.assertIn(
+                "[1/1] case-one / paperqa done (model ",
+                progress.getvalue(),
+            )
+            self.assertIn(", correct: yes)", progress.getvalue())
             self.assertIn("[1/1] case-one / codex failed (", progress.getvalue())
 
             def failed_summarizer(question, response):
