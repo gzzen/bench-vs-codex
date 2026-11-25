@@ -12,7 +12,8 @@ in the source dataset. The runner does not use Harbor.
 - A PaperQA checkout at `../paper-qa` with its `.venv` installed (`uv sync
   --no-dev` in that checkout), or pass `--paperqa-dir`.
 - Copy `.env.example` to `.env` and set `DEEPSEEK_API_KEY` there. The runner
-  loads it for both systems; an already exported key takes precedence. `.env`
+  loads it for both systems and the independent answer extractor; an already
+  exported key takes precedence. `.env`
   is ignored by Git. PaperQA uses its `deepseek` preset, including the local
   sparse embedding model. Document text is sent to DeepSeek during answering.
 - Install the Codex CLI. The repository's `.codex/config.toml` selects
@@ -45,17 +46,27 @@ Each run gets a new ignored `runs/<timestamp>-<id>/` directory. PaperQA gets a
 per-case paper folder containing only that PDF, a separate index, and separate
 PaperQA state. Codex gets its own per-case directory containing the same PDF.
 The CLI runs cases and systems sequentially and prints brief start/finish lines
-for each system before the final comparison table. `results.jsonl` has one record per
-case and system with the short answer, full response, any error, elapsed seconds, settings,
-and an exact-match score. Process logs are kept beside the case folders. Use
+for each system before the final comparison table. Each system receives the
+question from `cases.json` exactly as written, with no answer-length instruction.
+After each response, a separate DeepSeek `deepseek-flash` call extracts a short
+answer using only the question and that response. It does not receive the PDF
+or reference answer. Another DeepSeek call judges whether the extracted answer
+means the same thing as the reference answer for that question. The judge sees
+the question and two answers, but not the PDF or the system's raw response.
+
+`results.jsonl` has one record per case and system with the raw system answer,
+complete response, extracted answer, separate model, extraction, and judge times,
+settings, errors, `exact_match`, and `semantic_match`. The CLI table shows these
+scores as `EM` and `SM` (`yes`, `no`, or `-` if unavailable). Process logs are kept beside the
+case folders. Use
 `--work-dir` and `--output` to choose other locations.
 
-PaperQA citation markers are removed from its short answer before scoring; its
-complete cited response remains in `full_answer`. Exact match then ignores
-letter case, whitespace differences, and surrounding punctuation only. A valid
-paraphrase or answer with extra context can score as a miss; inspect the saved
-answers manually. Both systems use DeepSeek, but PaperQA's preset and Codex's
-agent workflow differ, so this still compares complete systems.
+The extractor's `answer` is scored after normalization of letter case,
+whitespace, and surrounding punctuation. Extraction can introduce mistakes;
+inspect `raw_answer` and `full_answer` when reviewing results. A valid
+paraphrase can still score as an exact-match miss. The semantic judge is an LLM
+assessment and can be wrong; review borderline cases manually. Both systems use DeepSeek, but PaperQA's
+preset and Codex's agent workflow differ, so this still compares complete systems.
 
 Run the stubbed tests with:
 

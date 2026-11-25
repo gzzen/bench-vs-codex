@@ -2,14 +2,6 @@
 
 import argparse
 import json
-import re
-
-
-def short_answer(raw_answer: str) -> str:
-    """Remove PaperQA citation markers, leaving answer text for exact matching."""
-    key = r"pqac-[a-zA-Z0-9]{8}"
-    citations = rf"\(\s*{key}(?:\s*,\s*{key})*\s*\)"
-    return re.sub(citations, "", raw_answer).strip()
 
 
 def main() -> None:
@@ -26,10 +18,9 @@ def main() -> None:
     settings.agent.index.paper_directory = args.papers
     settings.agent.index.index_directory = args.index
     settings.agent.index.name = "case"
-    settings.answer.answer_length = "one short phrase or sentence"
     result = ask(args.question, settings)
     print(json.dumps({
-        "answer": short_answer(result.session.raw_answer),
+        "answer": result.session.answer,
         "formatted_answer": result.session.formatted_answer,
         "status": str(result.status),
         "model": settings.llm,
