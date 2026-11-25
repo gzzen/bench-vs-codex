@@ -1,0 +1,41 @@
+{
+  "profiles": {
+    "all": {
+      "description": "Run every MMLongBench-Doc question with PaperQA and Codex.",
+      "systems": [
+        "paperqa",
+        "codex"
+      ],
+      "filters": {}
+    },
+    "text-based": {
+      "description": "Skip questions whose evidence includes a Figure or Chart.",
+      "systems": [
+        "paperqa",
+        "codex"
+      ],
+      "filters": {
+        "exclude_evidence_sources": [
+          "Figure",
+          "Chart"
+        ]
+      }
+    },
+    "plain-text": {
+      "description": "Questions with plain-text evidence and no Figure or Chart evidence.",
+      "systems": [
+        "paperqa",
+        "codex"
+      ],
+      "filters": {
+        "include_evidence_sources": [
+          "Pure-text (Plain-text)"
+        ],
+        "exclude_evidence_sources": [
+          "Figure",
+          "Chart"
+        ]
+      }
+    }
+  }
+}

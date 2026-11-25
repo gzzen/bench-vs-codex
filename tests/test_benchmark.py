@@ -7,10 +7,15 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from benchmark import (
-    Case, codex_provider_overrides, codex_settings, extract_answer, judge_semantic_match,
-    load_cases, load_project_env, normalize_answer, print_table, run_cases, run_codex,
-    run_paperqa, score,
+from benchmark import main, print_table, run_cases
+from benchmark_data import (
+    Case, filter_cases, load_cases, load_run_config, questions_path,
+)
+from benchmark_evaluation import (
+    extract_answer, judge_semantic_match, load_project_env, normalize_answer, score,
+)
+from benchmark_systems import (
+    codex_provider_overrides, codex_settings, run_codex, run_paperqa,
 )
 
 
@@ -48,6 +53,93 @@ class BenchmarkTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_cases(manifest)
 
+    def test_mmlongbench_loading_and_evidence_filters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / "data"
+            data.mkdir()
+            samples = [
+                {
+                    "doc_id": "one.pdf", "doc_type": "Report", "question": "Text?",
+                    "answer": "A", "evidence_pages": "[1]",
+                    "evidence_sources": "['Pure-text (Plain-text)']",
+                    "answer_format": "Str",
+                },
+                {
+                    "doc_id": "one.pdf", "doc_type": "Report", "question": "Chart?",
+                    "answer": "B", "evidence_pages": "[2]",
+                    "evidence_sources": "['Chart']",
+                    "answer_format": "Str",
+                },
+                {
+                    "doc_id": "two.pdf", "doc_type": "Brochure", "question": "Figure?",
+                    "answer": "C", "evidence_pages": "[3, 4]",
+                    "evidence_sources": "['Figure', 'Table']",
+                    "answer_format": "Str",
+                },
+            ]
+            (data / "samples.json").write_text(json.dumps(samples), encoding="utf-8")
+            cases = load_cases(questions_path(data))
+            self.assertEqual([case.id for case in cases], [
+                "mmlongbench-0001", "mmlongbench-0002", "mmlongbench-0003",
+            ])
+            self.assertEqual(cases[2].evidence_sources, ("Figure", "Table"))
+            self.assertEqual(cases[2].evidence_pages, (3, 4))
+            self.assertEqual(cases[1].reference_answer, "B")
+
+            config_path = root / "run_configs.json"
+            config_path.write_text(json.dumps({"profiles": {
+                "no-visuals": {
+                    "systems": ["codex"],
+                    "limit": 1,
+                    "filters": {"exclude_evidence_sources": ["figure", "CHART"]},
+                },
+                "tables": {
+                    "filters": {"include_evidence_sources": ["Table"]},
+                },
+            }}), encoding="utf-8")
+            config = load_run_config(config_path, "no-visuals")
+            self.assertEqual(config.systems, ("codex",))
+            self.assertEqual(config.limit, 1)
+            filtered = filter_cases(cases, config.filters)
+            self.assertEqual([case.id for case in filtered], ["mmlongbench-0001"])
+            table_cases = filter_cases(cases, load_run_config(config_path, "tables").filters)
+            self.assertEqual([case.id for case in table_cases], ["mmlongbench-0003"])
+
+    def test_dataset_dry_run_uses_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / "data"
+            documents = data / "documents"
+            documents.mkdir(parents=True)
+            (documents / "one.pdf").write_bytes(b"%PDF-1.4\n")
+            (data / "samples.json").write_text(json.dumps([{
+                "doc_id": "one.pdf", "doc_type": "Report", "question": "Plain text?",
+                "answer": "A", "evidence_pages": "[1]",
+                "evidence_sources": "['Pure-text (Plain-text)']",
+                "answer_format": "Str",
+            }, {
+                "doc_id": "one.pdf", "doc_type": "Report", "question": "Chart?",
+                "answer": "B", "evidence_pages": "[2]",
+                "evidence_sources": "['Chart']", "answer_format": "Str",
+            }]), encoding="utf-8")
+            config = root / "run_configs.json"
+            config.write_text(json.dumps({"profiles": {
+                "skip-visuals": {
+                    "filters": {"exclude_evidence_sources": ["Figure", "Chart"]},
+                },
+            }}), encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                status = main([
+                    "--data", str(data), "--config", str(config),
+                    "--profile", "skip-visuals", "--dry-run",
+                ])
+            self.assertEqual(status, 0)
+            self.assertIn("Plain text?", output.getvalue())
+            self.assertNotIn("Chart?", output.getvalue())
+            self.assertIn("Profile skip-visuals: validated 1 PDF paths", output.getvalue())
+
     def test_normalization_and_exact_match(self):
         self.assertEqual(normalize_answer('  “Rick   SCOTT.”\n'), "rick scott")
         self.assertTrue(score("  RICK  Scott.  ", "Rick Scott"))
@@ -82,7 +174,7 @@ class BenchmarkTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "invalid verdict"):
                     judge_semantic_match("Who?", "Robert", "Bob")
 
-    def test_both_runners_receive_exact_manifest_question(self):
+    def test_both_runners_receive_exact_question(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pdf = root / "one.pdf"
@@ -97,7 +189,7 @@ class BenchmarkTests(unittest.TestCase):
                 "model": "deepseek-flash", "summary_model": "deepseek-flash",
                 "agent_model": "deepseek-flash", "embedding": "sparse", "status": "success",
             })
-            with patch("benchmark._run_command", return_value=paperqa_result) as command_call:
+            with patch("benchmark_systems._run_command", return_value=paperqa_result) as command_call:
                 run_paperqa(case, pdf, root / "paperqa-case", checkout)
             command = command_call.call_args.args[0]
             self.assertEqual(command[command.index("--question") + 1], case.question)
@@ -111,7 +203,7 @@ class BenchmarkTests(unittest.TestCase):
                 return ""
 
             with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}):
-                with patch("benchmark._run_command", side_effect=fake_codex_command):
+                with patch("benchmark_systems._run_command", side_effect=fake_codex_command):
                     run_codex(case, pdf, codex_case_dir, "codex")
 
     def test_records_answers_and_runner_errors(self):

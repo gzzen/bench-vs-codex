@@ -1,72 +1,140 @@
-# PaperQA vs Codex: local PDF benchmark
+# PaperQA vs Codex: MMLongBench-Doc PDF benchmark
 
-This runner asks PaperQA and the installed Codex CLI the same five questions about
-the same PDFs from MMLongBench-Doc. Each question has one checked-in reference
-answer in `cases.json`. These five questions are marked as plain-text evidence
-in the source dataset. The runner does not use Harbor.
+This runner asks PaperQA and the installed Codex CLI the same questions about
+the same local PDFs. Questions, reference answers, evidence sources, evidence
+pages, answer formats, and document types are read directly from
+`../MMLongBench-Doc/data/samples.json`; the PDFs are read from
+`../MMLongBench-Doc/data/documents`. `cases.json` is no longer used.
+
+The runner does not use Harbor.
 
 ## Setup
 
 - Python 3.11 or newer for `benchmark.py` (standard library only).
-- A local MMLongBench-Doc checkout at `../MMLongBench-Doc`, or pass `--dataset`.
+- A local MMLongBench-Doc checkout at `../MMLongBench-Doc`. Pass `--data` to
+  use another data directory or question JSON file.
 - A PaperQA checkout at `../paper-qa` with its `.venv` installed (`uv sync
-  --no-dev` in that checkout), or pass `--paperqa-dir`.
+  --no-dev` in that checkout), or pass `--paperqa-dir`. This is only required
+  when PaperQA is one of the selected systems.
 - Copy `.env.example` to `.env` and set `DEEPSEEK_API_KEY` there. The runner
   loads it for both systems and the independent answer extractor; an already
-  exported key takes precedence. `.env`
-  is ignored by Git. PaperQA uses its `deepseek` preset, including the local
-  sparse embedding model. Document text is sent to DeepSeek during answering.
+  exported key takes precedence. `.env` is ignored by Git. PaperQA uses its
+  `deepseek` preset, including the local sparse embedding model. Document text
+  is sent to DeepSeek during answering.
 - Install the Codex CLI. The repository's `.codex/config.toml` selects
   `deepseek-flash` through the DeepSeek Responses API using `DEEPSEEK_API_KEY`.
   The runner ignores the global Codex config, disables web search, and runs
-  with `--sandbox read-only`. Codex may ignore project settings until the
-  repository is trusted; the runner reads the local config and passes its
-  non-secret provider fields explicitly, so no trust change is needed for the
-  benchmark. DeepSeek API requests are still required.
+  with `--sandbox read-only`.
 
-Check that the five PDFs are available without making model calls:
+## Quick start
 
-```bash
-python3 benchmark.py --dry-run
-```
-
-Run one case as a smoke test:
+Validate a few dataset records without making model calls:
 
 ```bash
-python3 benchmark.py --case limes-phone
+python3 benchmark.py --dry-run --limit 5
 ```
 
-Run all five:
+Run only questions whose evidence sources do not contain `Figure` or `Chart`:
+
+```bash
+python3 benchmark.py --profile without-figures-and-charts --dry-run
+python3 benchmark.py --profile without-figures-and-charts --limit 5
+```
+
+Run one system on plain-text questions:
+
+```bash
+python3 benchmark.py --profile plain-text --system codex --limit 1
+```
+
+Run the complete dataset with both systems:
 
 ```bash
 python3 benchmark.py
 ```
 
-Each run gets a new ignored `runs/<timestamp>-<id>/` directory. PaperQA gets a
-per-case paper folder containing only that PDF, a separate index, and separate
-PaperQA state. Codex gets its own per-case directory containing the same PDF.
-The CLI runs cases and systems sequentially and prints brief start/finish lines
-for each system before the final comparison table. Each system receives the
-question from `cases.json` exactly as written, with no answer-length instruction.
-After each response, a separate DeepSeek `deepseek-flash` call extracts a short
-answer using only the question and that response. It does not receive the PDF
-or reference answer. Another DeepSeek call judges whether the extracted answer
-means the same thing as the reference answer for that question. The judge sees
-the question and two answers, but not the PDF or the system's raw response.
+That command schedules all 1,082 questions in the local dataset, so use a
+profile or `--limit` for
+smoke tests.
 
-`results.jsonl` has one record per case and system with the raw system answer,
-complete response, extracted answer, separate model, extraction, and judge times,
-settings, errors, `exact_match`, and `semantic_match`. The CLI table shows these
-scores as `EM` and `SM` (`yes`, `no`, or `-` if unavailable). Process logs are kept beside the
-case folders. Use
-`--work-dir` and `--output` to choose other locations.
+## Run profiles
+
+[`run_configs.json`](run_configs.json) contains named profiles. Use
+`--config` to select another profiles file and `--profile` to select a profile.
+Each profile can set:
+
+- `systems`: any nonempty combination of `paperqa` and `codex`.
+- `limit`: maximum number of questions after filtering, or `null`.
+- `filters.case_ids`: exact IDs such as `mmlongbench-0001`.
+- `filters.include_documents` / `exclude_documents`: exact PDF filenames.
+- `filters.include_question_contains` / `exclude_question_contains`:
+  case-insensitive question substrings.
+- `filters.include_evidence_sources` / `exclude_evidence_sources`:
+  case-insensitive substrings matched against `evidence_sources`.
+
+Include filters require any listed value to match. Exclude filters reject the
+question when any listed value matches. All filter categories are ANDed, and
+`limit` is applied after filtering. For example:
+
+```json
+{
+  "profiles": {
+    "text-and-tables": {
+      "description": "Skip questions relying on figures or charts.",
+      "systems": ["paperqa", "codex"],
+      "limit": null,
+      "filters": {
+        "exclude_evidence_sources": ["Figure", "Chart"],
+        "exclude_question_contains": ["in the image"]
+      }
+    }
+  }
+}
+```
+
+Convenience overrides are available for `--system`, `--limit`, `--case`,
+`--include-evidence-source`, and `--exclude-evidence-source`. The latter two
+add to the selected profile's source filters.
+
+## Execution and results
+
+Each run gets a new ignored `runs/<timestamp>-<id>/` directory. Its `run.json`
+records the effective profile, dataset path, question file, and selected case
+count. PaperQA gets a per-case paper folder containing only that PDF, a separate
+index, and separate PaperQA state. Codex gets its own per-case directory
+containing the same PDF.
+
+The CLI runs cases and systems sequentially. Each system receives the original
+dataset question exactly as written, with no answer-length instruction. After
+each response, a separate DeepSeek `deepseek-flash` call extracts a short
+answer using only the question and response. It does not receive the PDF or
+reference answer. Another DeepSeek call judges whether the extracted answer
+means the same thing as the dataset's reference answer. The judge sees the
+question and two answers, but not the PDF or the system's raw response.
+
+`results.jsonl` has one record per case and system with the question, reference
+answer, `evidence_sources`, `evidence_pages`, answer format, document type,
+dataset index, raw system answer, complete response, extracted answer, model
+settings, timings, errors, `exact_match`, and `semantic_match`. The CLI table
+shows scores as `EM` and `SM` (`yes`, `no`, or `-` if unavailable). Process logs
+are kept beside the case folders. Use `--work-dir` and `--output` to choose
+other locations.
 
 The extractor's `answer` is scored after normalization of letter case,
 whitespace, and surrounding punctuation. Extraction can introduce mistakes;
 inspect `raw_answer` and `full_answer` when reviewing results. A valid
 paraphrase can still score as an exact-match miss. The semantic judge is an LLM
-assessment and can be wrong; review borderline cases manually. Both systems use DeepSeek, but PaperQA's
-preset and Codex's agent workflow differ, so this still compares complete systems.
+assessment and can be wrong; review borderline cases manually.
+
+## Code layout
+
+- `benchmark.py`: CLI and main orchestration, including result recording.
+- `benchmark_data.py`: MMLongBench-Doc loading, path resolution, profiles, and
+  filters.
+- `benchmark_evaluation.py`: normalization, answer extraction, and semantic
+  judging.
+- `benchmark_systems.py`: PaperQA and Codex command adapters.
+- `paperqa_bridge.py`: JSON bridge into the PaperQA checkout.
 
 Run the stubbed tests with:
 

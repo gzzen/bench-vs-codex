@@ -1,245 +1,45 @@
-"""Small, sequential PaperQA versus Codex benchmark for local PDFs."""
+"""Main runner for the sequential PaperQA versus Codex benchmark."""
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import re
 import shutil
-import subprocess
 import sys
 import time
-import tomllib
-import urllib.request
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Callable
 
-
-ROOT = Path(__file__).resolve().parent
-DEFAULT_DATASET = ROOT.parent / "MMLongBench-Doc"
-DEFAULT_PAPERQA = ROOT.parent / "paper-qa"
-SUMMARIZER_MODEL = "deepseek-flash"
-SUMMARIZER_URL = "https://api.deepseek.com/chat/completions"
-SUMMARIZER_INSTRUCTIONS = (
-    "Extract the answer from the response text for exact-match scoring. "
-    "Use only the response text; the question is context, not a source to solve anew. "
-    "Remove citations, references, explanations, and hedging. Preserve names, numbers, and units. "
-    "If the response says it cannot answer, return 'I cannot answer.' "
-    "Return only the answer, without labels, quotes, or commentary."
+from benchmark_data import (
+    DEFAULT_CONFIG,
+    DEFAULT_DATA,
+    ROOT,
+    Case,
+    filter_cases,
+    load_cases,
+    load_run_config,
+    pdf_path,
+    questions_path,
 )
-JUDGE_INSTRUCTIONS = (
-    "Compare a candidate answer with a reference answer for the given question. "
-    "Judge whether they mean the same thing as answers to that question. "
-    "Accept harmless rewording, abbreviations, and formatting differences. "
-    "Reject different entities, numbers, units, missing required parts, or contradictions. "
-    "Use only the supplied question and answers; do not solve the question yourself. "
-    "Reply with exactly YES or NO."
+from benchmark_evaluation import (
+    SUMMARIZER_MODEL,
+    Judge,
+    Summarizer,
+    extract_answer,
+    judge_semantic_match,
+    load_project_env,
+    score,
 )
-
-
-def load_project_env(path: Path = ROOT / ".env") -> None:
-    """Load the project's DeepSeek key; an exported key takes precedence."""
-    if not path.is_file():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        key, separator, value = line.strip().partition("=")
-        if not separator or key != "DEEPSEEK_API_KEY":
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        if value and not os.environ.get(key):
-            os.environ[key] = value
-
-
-@dataclass(frozen=True)
-class Case:
-    id: str
-    document: str
-    question: str
-    reference_answer: str
-
-
-def load_cases(path: Path) -> list[Case]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list) or not data:
-        raise ValueError("Case manifest must be a nonempty JSON list")
-    cases = []
-    ids = set()
-    for item in data:
-        case = Case(**item)
-        if not all((case.id, case.document, case.question, case.reference_answer)):
-            raise ValueError("Case fields cannot be empty")
-        if case.id in ids or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", case.id):
-            raise ValueError(f"Invalid or duplicate case id: {case.id}")
-        if Path(case.document).name != case.document or not case.document.endswith(".pdf"):
-            raise ValueError(f"Document must be a PDF filename: {case.document}")
-        ids.add(case.id)
-        cases.append(case)
-    return cases
-
-
-def pdf_path(dataset: Path, case: Case) -> Path:
-    path = dataset / "data" / "documents" / case.document
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing PDF for {case.id}: {path}")
-    return path
-
-
-def normalize_answer(answer: str) -> str:
-    return re.sub(r"\s+", " ", answer.casefold()).strip().strip(" \t\n\r.,;:!?\"'`“”‘’()[]{}")
-
-
-def score(answer: str, reference: str) -> bool:
-    return normalize_answer(answer) == normalize_answer(reference)
-
-
-def _run_command(command: list[str], cwd: Path, log_prefix: Path, *, env: dict[str, str] | None = None, stdin: str | None = None) -> str:
-    completed = subprocess.run(
-        command, cwd=cwd, env=env, input=stdin, text=True, capture_output=True,
-        check=False,
-    )
-    log_prefix.with_suffix(".stdout.log").write_text(completed.stdout, encoding="utf-8")
-    log_prefix.with_suffix(".stderr.log").write_text(completed.stderr, encoding="utf-8")
-    if completed.returncode:
-        detail = completed.stderr.strip()[-1200:] or completed.stdout.strip()[-1200:]
-        raise RuntimeError(f"exit {completed.returncode}: {detail}")
-    return completed.stdout
-
-
-def _deepseek_completion(instructions: str, inputs: dict, max_tokens: int) -> str:
-    """Call DeepSeek directly, without using PaperQA or Codex."""
-    key = os.environ.get("DEEPSEEK_API_KEY")
-    if not key:
-        raise RuntimeError("Set DEEPSEEK_API_KEY in the project .env or environment")
-    payload = {
-        "model": SUMMARIZER_MODEL,
-        "temperature": 0,
-        "max_tokens": max_tokens,
-        "thinking": {"type": "disabled"},
-        "messages": [
-            {"role": "system", "content": instructions},
-            {"role": "user", "content": json.dumps(inputs, ensure_ascii=False)},
-        ],
-    }
-    request = urllib.request.Request(
-        SUMMARIZER_URL,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        result = json.load(response)
-    content = result["choices"][0]["message"]["content"]
-    if not isinstance(content, str) or not content.strip():
-        reason = result["choices"][0].get("finish_reason")
-        raise ValueError(f"DeepSeek returned an empty response (finish_reason={reason})")
-    return content.strip()
-
-
-def extract_answer(question: str, response_text: str) -> tuple[str, dict]:
-    """Extract a scoreable answer from a system response."""
-    answer = _deepseek_completion(
-        SUMMARIZER_INSTRUCTIONS, {"question": question, "response": response_text}, 512,
-    )
-    return answer, {
-        "model": SUMMARIZER_MODEL, "temperature": 0, "max_tokens": 512,
-        "thinking": "disabled",
-        "endpoint": SUMMARIZER_URL,
-    }
-
-
-def judge_semantic_match(question: str, answer: str, reference_answer: str) -> tuple[bool, dict]:
-    """Judge answer equivalence without seeing the source PDF or system response."""
-    verdict = _deepseek_completion(
-        JUDGE_INSTRUCTIONS,
-        {"question": question, "candidate_answer": answer, "reference_answer": reference_answer},
-        256,
-    ).strip(' \t\r\n.\"\'')
-    if verdict.casefold() not in ("yes", "no"):
-        raise ValueError(f"DeepSeek judge returned an invalid verdict: {verdict[:80]!r}")
-    return verdict.casefold() == "yes", {
-        "model": SUMMARIZER_MODEL, "temperature": 0, "max_tokens": 256,
-        "thinking": "disabled",
-        "endpoint": SUMMARIZER_URL,
-    }
-
-
-def run_paperqa(case: Case, pdf: Path, case_dir: Path, checkout: Path) -> tuple[str, dict, str]:
-    python = checkout / ".venv" / "bin" / "python"
-    if not python.is_file():
-        raise FileNotFoundError(f"PaperQA Python missing: {python}")
-    papers = case_dir / "paperqa" / "papers"
-    papers.mkdir(parents=True)
-    shutil.copy2(pdf, papers / pdf.name)
-    index = case_dir / "paperqa" / "index"
-    env = os.environ.copy()
-    env["PQA_HOME"] = str(case_dir / "paperqa" / "home")
-    env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
-    output = _run_command([
-        str(python), str(ROOT / "paperqa_bridge.py"),
-        "--papers", str(papers), "--index", str(index),
-        "--question", case.question,
-    ], checkout, case_dir / "paperqa" / "process", env=env)
-    # PaperQA may print diagnostics to stdout. The bridge's JSON is its last line.
-    result = json.loads(output.strip().splitlines()[-1])
-    return result["answer"], {
-        "preset": "deepseek", "model": result["model"],
-        "summary_model": result["summary_model"], "agent_model": result["agent_model"],
-        "embedding": result["embedding"],
-        "status": result["status"], "index_directory": str(index),
-    }, result["formatted_answer"]
-
-
-def codex_settings() -> dict:
-    config = ROOT / ".codex" / "config.toml"
-    return tomllib.loads(config.read_text(encoding="utf-8"))
-
-
-def codex_provider_overrides(config: dict) -> list[str]:
-    provider_name = config["model_provider"]
-    provider = config["model_providers"][provider_name]
-    overrides = []
-    for key in ("name", "base_url", "wire_api", "env_key", "supports_standalone_web_search"):
-        value = provider[key]
-        overrides.extend(["--config", f"model_providers.{provider_name}.{key}={json.dumps(value)}"])
-    return overrides
-
-
-def run_codex(case: Case, pdf: Path, case_dir: Path, codex_bin: str) -> tuple[str, dict, str]:
-    config = codex_settings()
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        raise RuntimeError("Set DEEPSEEK_API_KEY in the project .env or environment")
-    codex_dir = case_dir / "codex"
-    codex_dir.mkdir()
-    shutil.copy2(pdf, codex_dir / pdf.name)
-    answer_path = case_dir / "codex-answer.txt"
-    command = [
-        codex_bin, "exec", "--skip-git-repo-check", "--ignore-user-config",
-        "--strict-config", "--model", config["model"],
-        "--config", f"model_provider={config['model_provider']}",
-        "--config", "web_search=disabled", "--disable", "standalone_web_search",
-        *codex_provider_overrides(config), "--sandbox", "read-only",
-        "--ephemeral", "--color", "never", "--output-last-message", str(answer_path), "-",
-    ]
-    _run_command(command, codex_dir, case_dir / "codex-process", stdin=case.question)
-    if not answer_path.is_file():
-        raise RuntimeError("Codex finished without writing its final message")
-    answer = answer_path.read_text(encoding="utf-8").strip()
-    return answer, {
-        "model": config["model"], "provider": config["model_provider"],
-        "sandbox": "read-only", "web_search": "disabled",
-        "user_config_ignored": True, "ephemeral": True, "binary": codex_bin,
-    }, answer
-
-
-Runner = Callable[[Case, Path, Path], tuple[str, dict, str]]
-Summarizer = Callable[[str, str], tuple[str, dict]]
-Judge = Callable[[str, str, str], tuple[bool, dict]]
+from benchmark_systems import (
+    DEFAULT_PAPERQA,
+    Runner,
+    codex_settings,
+    run_codex,
+    run_paperqa,
+)
 
 
 def run_cases(
@@ -247,6 +47,7 @@ def run_cases(
     runners: dict[str, Runner], summarizer: Summarizer, judge: Judge,
     planned_settings: dict[str, dict] | None = None,
 ) -> list[dict]:
+    """Run each system, extract an answer, judge it, and persist each result."""
     work_dir.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     records = []
@@ -304,6 +105,11 @@ def run_cases(
                 record = {
                     "case_id": case.id, "document": case.document, "question": case.question,
                     "reference_answer": case.reference_answer, "system": system,
+                    "evidence_sources": list(case.evidence_sources),
+                    "evidence_pages": list(case.evidence_pages),
+                    "answer_format": case.answer_format,
+                    "doc_type": case.doc_type,
+                    "dataset_index": case.dataset_index,
                     "answer": answer, "raw_answer": raw_answer, "full_answer": full_answer,
                     "error": error, "summarizer_error": summarizer_error,
                     "judge_error": judge_error,
@@ -348,9 +154,19 @@ def print_table(records: list[dict]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--manifest", type=Path, default=ROOT / "cases.json")
+    parser.add_argument("--data", "--dataset", dest="data", type=Path, default=DEFAULT_DATA,
+                        help="MMLongBench-Doc data directory or questions JSON")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                        help="Named run profiles JSON")
+    parser.add_argument("--profile", default="all", help="Run profile name")
     parser.add_argument("--case", action="append", help="Run one case ID (repeatable)")
+    parser.add_argument("--system", action="append", choices=("paperqa", "codex"),
+                        help="System to run (repeatable; overrides the profile)")
+    parser.add_argument("--limit", type=int, help="Maximum number of filtered questions")
+    parser.add_argument("--include-evidence-source", action="append", default=[],
+                        help="Keep cases whose evidence sources contain this text (repeatable)")
+    parser.add_argument("--exclude-evidence-source", action="append", default=[],
+                        help="Skip cases whose evidence sources contain this text (repeatable)")
     parser.add_argument("--paperqa-dir", type=Path, default=DEFAULT_PAPERQA)
     parser.add_argument("--codex-bin", default=shutil.which("codex") or "codex")
     parser.add_argument("--work-dir", type=Path)
@@ -358,20 +174,53 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
-        cases = load_cases(args.manifest)
+        config = load_run_config(args.config, args.profile)
+        if args.system:
+            config = replace(config, systems=tuple(dict.fromkeys(args.system)))
+        if args.limit is not None:
+            if args.limit < 1:
+                raise ValueError("--limit must be a positive integer")
+            config = replace(config, limit=args.limit)
+        if args.include_evidence_source or args.exclude_evidence_source:
+            filters = replace(
+                config.filters,
+                include_evidence_sources=config.filters.include_evidence_sources
+                + tuple(args.include_evidence_source),
+                exclude_evidence_sources=config.filters.exclude_evidence_sources
+                + tuple(args.exclude_evidence_source),
+            )
+            config = replace(config, filters=filters)
+        all_cases = load_cases(questions_path(args.data))
+        available_ids = {case.id for case in all_cases}
+        requested_ids = set(config.filters.case_ids) | set(args.case or [])
+        unknown_ids = requested_ids - available_ids
+        if unknown_ids:
+            raise ValueError(f"Unknown case IDs: {', '.join(sorted(unknown_ids))}")
         if args.case:
-            unknown = set(args.case) - {case.id for case in cases}
-            if unknown:
-                raise ValueError(f"Unknown case IDs: {', '.join(sorted(unknown))}")
-            cases = [case for case in cases if case.id in args.case]
+            config = replace(
+                config,
+                filters=replace(config.filters, case_ids=tuple(dict.fromkeys(args.case))),
+            )
+        cases = filter_cases(all_cases, config.filters)
+        if config.limit is not None:
+            cases = cases[:config.limit]
+        if not cases:
+            raise ValueError("No questions matched the selected run profile")
         for case in cases:
-            pdf_path(args.dataset, case)
+            pdf_path(args.data, case)
     except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))
     if args.dry_run:
         for case in cases:
-            print(f"{case.id:20} {case.document} | {case.question} | {case.reference_answer}")
-        print(f"Validated {len(cases)} PDF paths; no model calls made.")
+            sources = ", ".join(case.evidence_sources) or "none"
+            print(
+                f"{case.id:20} {case.document} | {case.question} | "
+                f"{case.reference_answer} | sources={sources}"
+            )
+        print(
+            f"Profile {config.name}: validated {len(cases)} PDF paths and "
+            f"selected systems ({', '.join(config.systems)}); no model calls made."
+        )
         return 0
     load_project_env()
     if not os.environ.get("DEEPSEEK_API_KEY"):
@@ -383,18 +232,41 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"Work directory is not empty: {work_dir}")
     if output.exists():
         parser.error(f"Output already exists: {output}")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / "run.json").write_text(
+        json.dumps({
+            "config": asdict(config),
+            "data": str(args.data.resolve()),
+            "questions": str(questions_path(args.data).resolve()),
+            "case_count": len(cases),
+        }, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     paperqa_dir = args.paperqa_dir.resolve()
-    records = run_cases(cases, args.dataset, work_dir, output, {
+    runner_factories = {
         "paperqa": lambda case, pdf, directory: run_paperqa(case, pdf, directory, paperqa_dir),
         "codex": lambda case, pdf, directory: run_codex(case, pdf, directory, args.codex_bin),
-    }, extract_answer, judge_semantic_match, planned_settings={
+    }
+    planned_settings = {
         "paperqa": {"preset": "deepseek", "model": "deepseek/deepseek-flash", "embedding": "sparse"},
         "codex": {
             "model": codex_settings()["model"], "provider": codex_settings()["model_provider"],
             "sandbox": "read-only", "web_search": "disabled",
             "user_config_ignored": True, "binary": args.codex_bin,
         },
-    })
+    }
+    records = run_cases(
+        cases,
+        args.data,
+        work_dir,
+        output,
+        {system: runner_factories[system] for system in config.systems},
+        extract_answer,
+        judge_semantic_match,
+        planned_settings={
+            system: planned_settings[system] for system in config.systems
+        },
+    )
     print_table(records)
     print(f"Results: {output}")
     return 1 if any(
