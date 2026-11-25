@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import random
 import shutil
 import sys
 import time
@@ -152,6 +153,16 @@ def print_table(records: list[dict]) -> None:
         print(f"{row['case_id']:20} {row['system']:8} {em:5} {sm:5} {row['elapsed_seconds']:8.1f}  {value}")
 
 
+def select_cases(
+    cases: list[Case], limit: int | None = None, randomize: bool = False,
+) -> list[Case]:
+    """Select cases in dataset order or randomly, then apply the limit."""
+    selected = list(cases)
+    if randomize:
+        random.shuffle(selected)
+    return selected[:limit] if limit is not None else selected
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", "--dataset", dest="data", type=Path, default=DEFAULT_DATA,
@@ -163,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--system", action="append", choices=("paperqa", "codex"),
                         help="System to run (repeatable; overrides the profile)")
     parser.add_argument("--limit", type=int, help="Maximum number of filtered questions")
+    parser.add_argument("--random", action="store_true",
+                        help="Randomly reorder matching questions before applying --limit")
     parser.add_argument("--include-evidence-source", action="append", default=[],
                         help="Keep cases whose evidence sources contain this text (repeatable)")
     parser.add_argument("--exclude-evidence-source", action="append", default=[],
@@ -181,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.limit < 1:
                 raise ValueError("--limit must be a positive integer")
             config = replace(config, limit=args.limit)
+        if args.random:
+            config = replace(config, randomize=True)
         if args.include_evidence_source or args.exclude_evidence_source:
             filters = replace(
                 config.filters,
@@ -202,8 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                 filters=replace(config.filters, case_ids=tuple(dict.fromkeys(args.case))),
             )
         cases = filter_cases(all_cases, config.filters)
-        if config.limit is not None:
-            cases = cases[:config.limit]
+        cases = select_cases(cases, config.limit, config.randomize)
         if not cases:
             raise ValueError("No questions matched the selected run profile")
         for case in cases:
@@ -219,7 +233,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(
             f"Profile {config.name}: validated {len(cases)} PDF paths and "
-            f"selected systems ({', '.join(config.systems)}); no model calls made."
+            f"selected systems ({', '.join(config.systems)}); "
+            f"selection={'random' if config.randomize else 'ordered'}; no model calls made."
         )
         return 0
     load_project_env()

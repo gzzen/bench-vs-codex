@@ -44,6 +44,7 @@ class RunConfig:
     description: str
     systems: tuple[str, ...]
     limit: int | None
+    randomize: bool
     filters: RunFilters
 
 
@@ -187,6 +188,9 @@ def load_run_config(path: Path = DEFAULT_CONFIG, profile: str = "all") -> RunCon
         not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
     ):
         raise ValueError(f"Run profile {profile!r} limit must be a positive integer or null")
+    randomize = selected.get("random", False)
+    if not isinstance(randomize, bool):
+        raise ValueError(f"Run profile {profile!r} random must be a boolean")
 
     raw_filters = selected.get("filters", {})
     if not isinstance(raw_filters, dict):
@@ -210,6 +214,7 @@ def load_run_config(path: Path = DEFAULT_CONFIG, profile: str = "all") -> RunCon
         description=description,
         systems=systems,
         limit=limit,
+        randomize=randomize,
         filters=filters,
     )
 

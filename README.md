@@ -47,6 +47,12 @@ Run one system on plain-text questions:
 python3 benchmark.py --profile plain-text --system codex --limit 1
 ```
 
+Choose 10 random questions from the plain-text profile:
+
+```bash
+python3 benchmark.py --profile plain-text --limit 10 --random
+```
+
 Run the complete dataset with both systems:
 
 ```bash
@@ -65,6 +71,7 @@ Each profile can set:
 
 - `systems`: any nonempty combination of `paperqa` and `codex`.
 - `limit`: maximum number of questions after filtering, or `null`.
+- `random`: whether to randomize matching questions before applying `limit`.
 - `filters.case_ids`: exact IDs such as `mmlongbench-0001`.
 - `filters.include_documents` / `exclude_documents`: exact PDF filenames.
 - `filters.include_question_contains` / `exclude_question_contains`:
@@ -92,9 +99,9 @@ question when any listed value matches. All filter categories are ANDed, and
 }
 ```
 
-Convenience overrides are available for `--system`, `--limit`, `--case`,
-`--include-evidence-source`, and `--exclude-evidence-source`. The latter two
-add to the selected profile's source filters.
+Convenience overrides are available for `--system`, `--limit`, `--random`,
+`--case`, `--include-evidence-source`, and `--exclude-evidence-source`. The
+last two add to the selected profile's source filters.
 
 ## Execution and results
 
@@ -119,6 +126,10 @@ settings, timings, errors, `exact_match`, and `semantic_match`. The CLI table
 shows scores as `EM` and `SM` (`yes`, `no`, or `-` if unavailable). Process logs
 are kept beside the case folders. Use `--work-dir` and `--output` to choose
 other locations.
+
+PaperQA answers that report that no papers were available are recorded as
+execution errors rather than correct abstentions. Such records bypass answer
+extraction and semantic judging, so `EM` and `SM` remain unavailable (`-`).
 
 The extractor's `answer` is scored after normalization of letter case,
 whitespace, and surrounding punctuation. Extraction can introduce mistakes;

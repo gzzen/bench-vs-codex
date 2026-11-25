@@ -12,3 +12,20 @@ base_url = "https://api.deepseek.com/"
 wire_api = "responses"
 env_key = "DEEPSEEK_API_KEY"
 supports_standalone_web_search = false
+
+
+
+default_permissions = "benchmark-pdf-only"
+approval_policy = "never"
+web_search = "disabled"
+
+[permissions.benchmark-pdf-only]
+description = "Only the staged PDF workspace"
+
+[permissions.benchmark-pdf-only.filesystem]
+":minimal" = "read"
+"/home/zizhen/agent_dev/bench-vs-codex/runs/CURRENT/mmlongbench-0002/codex" = "read"
+"/home/zizhen/agent_dev/bench-vs-codex/runs/CURRENT/mmlongbench-0002/codex-scratch" = "write"
+
+[permissions.benchmark-pdf-only.network]
+enabled = false

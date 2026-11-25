@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from benchmark import main, print_table, run_cases
+from benchmark import main, print_table, run_cases, select_cases
 from benchmark_data import (
     Case, filter_cases, load_cases, load_run_config, questions_path,
 )
@@ -15,7 +15,8 @@ from benchmark_evaluation import (
     extract_answer, judge_semantic_match, load_project_env, normalize_answer, score,
 )
 from benchmark_systems import (
-    codex_provider_overrides, codex_settings, run_codex, run_paperqa,
+    PaperQAEmptyDocsError, codex_provider_overrides, codex_settings, run_codex,
+    run_paperqa,
 )
 
 
@@ -95,6 +96,7 @@ class BenchmarkTests(unittest.TestCase):
                     "filters": {"exclude_evidence_sources": ["figure", "CHART"]},
                 },
                 "tables": {
+                    "random": True,
                     "filters": {"include_evidence_sources": ["Table"]},
                 },
             }}), encoding="utf-8")
@@ -103,7 +105,9 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(config.limit, 1)
             filtered = filter_cases(cases, config.filters)
             self.assertEqual([case.id for case in filtered], ["mmlongbench-0001"])
-            table_cases = filter_cases(cases, load_run_config(config_path, "tables").filters)
+            table_config = load_run_config(config_path, "tables")
+            self.assertTrue(table_config.randomize)
+            table_cases = filter_cases(cases, table_config.filters)
             self.assertEqual([case.id for case in table_cases], ["mmlongbench-0003"])
 
     def test_dataset_dry_run_uses_profile(self):
@@ -128,6 +132,7 @@ class BenchmarkTests(unittest.TestCase):
                 "skip-visuals": {
                     "filters": {"exclude_evidence_sources": ["Figure", "Chart"]},
                 },
+                "all": {"filters": {}},
             }}), encoding="utf-8")
             output = io.StringIO()
             with redirect_stdout(output):
@@ -139,6 +144,30 @@ class BenchmarkTests(unittest.TestCase):
             self.assertIn("Plain text?", output.getvalue())
             self.assertNotIn("Chart?", output.getvalue())
             self.assertIn("Profile skip-visuals: validated 1 PDF paths", output.getvalue())
+
+            with patch("benchmark.random.shuffle", side_effect=lambda values: values.reverse()):
+                with redirect_stdout(output := io.StringIO()):
+                    status = main([
+                        "--data", str(data), "--config", str(config),
+                        "--profile", "all", "--limit", "1", "--random", "--dry-run",
+                    ])
+            self.assertEqual(status, 0)
+            self.assertIn("Chart?", output.getvalue())
+            self.assertNotIn("Plain text?", output.getvalue())
+            self.assertIn("selection=random", output.getvalue())
+
+    def test_select_cases_randomizes_before_limit(self):
+        cases = [
+            Case("case-a", "one.pdf", "A?", "A"),
+            Case("case-b", "one.pdf", "B?", "B"),
+            Case("case-c", "one.pdf", "C?", "C"),
+        ]
+        self.assertEqual(
+            [case.id for case in select_cases(cases, 2)], ["case-a", "case-b"],
+        )
+        with patch("benchmark.random.shuffle", side_effect=lambda values: values.reverse()):
+            selected = select_cases(cases, 2, randomize=True)
+        self.assertEqual([case.id for case in selected], ["case-c", "case-b"])
 
     def test_normalization_and_exact_match(self):
         self.assertEqual(normalize_answer('  “Rick   SCOTT.”\n'), "rick scott")
@@ -205,6 +234,26 @@ class BenchmarkTests(unittest.TestCase):
             with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}):
                 with patch("benchmark_systems._run_command", side_effect=fake_codex_command):
                     run_codex(case, pdf, codex_case_dir, "codex")
+
+    def test_paperqa_no_papers_is_an_execution_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdf = root / "one.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n")
+            case = Case("case-one", "one.pdf", "Question?", "Answer")
+            checkout = root / "paper-qa"
+            python = checkout / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            no_papers = "I cannot answer this question due to having no papers."
+            paperqa_result = json.dumps({
+                "answer": no_papers, "formatted_answer": no_papers,
+                "model": "deepseek-flash", "summary_model": "deepseek-flash",
+                "agent_model": "deepseek-flash", "embedding": "sparse", "status": "unsure",
+            })
+            with patch("benchmark_systems._run_command", return_value=paperqa_result):
+                with self.assertRaisesRegex(PaperQAEmptyDocsError, "no readable papers"):
+                    run_paperqa(case, pdf, root / "paperqa-case", checkout)
 
     def test_records_answers_and_runner_errors(self):
         with tempfile.TemporaryDirectory() as temporary:

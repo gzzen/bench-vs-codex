@@ -17,6 +17,10 @@ DEFAULT_PAPERQA = ROOT.parent / "paper-qa"
 Runner = Callable[[Case, Path, Path], tuple[str, dict, str]]
 
 
+class PaperQAEmptyDocsError(RuntimeError):
+    """PaperQA could not make any readable paper available to its agent."""
+
+
 def _run_command(
     command: list[str],
     cwd: Path,
@@ -55,6 +59,14 @@ def run_paperqa(case: Case, pdf: Path, case_dir: Path, checkout: Path) -> tuple[
     ], checkout, case_dir / "paperqa" / "process", env=env)
     # PaperQA may print diagnostics to stdout. The bridge's JSON is its last line.
     result = json.loads(output.strip().splitlines()[-1])
+    response_text = "\n".join(
+        str(result.get(key) or "") for key in ("answer", "formatted_answer")
+    )
+    if "having no papers" in response_text.casefold():
+        raise PaperQAEmptyDocsError(
+            "PaperQA produced no readable papers "
+            f"(status={result.get('status', 'unknown')}): {result['answer']}"
+        )
     return result["answer"], {
         "preset": "deepseek", "model": result["model"],
         "summary_model": result["summary_model"], "agent_model": result["agent_model"],
