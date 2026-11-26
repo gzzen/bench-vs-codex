@@ -47,6 +47,19 @@ Run one system on plain-text questions:
 python3 cli.py --profile plain-text --system codex --limit 1
 ```
 
+Validate questions from one document type:
+
+```bash
+python3 cli.py --include-doc-type "Financial report" --dry-run --limit 5
+```
+
+The bundled `research-reports` profile selects one document type from
+`run_configs.json`:
+
+```bash
+python3 cli.py --profile research-reports --dry-run --limit 5
+```
+
 Choose 10 random questions from the plain-text profile:
 
 ```bash
@@ -74,6 +87,8 @@ Each profile can set:
 - `random`: whether to randomize matching questions before applying `limit`.
 - `filters.case_ids`: exact IDs such as `mmlongbench-0001`.
 - `filters.include_documents` / `exclude_documents`: exact PDF filenames.
+- `filters.include_doc_types` / `exclude_doc_types`: exact document-type
+  labels, matched case-insensitively.
 - `filters.include_question_contains` / `exclude_question_contains`:
   case-insensitive question substrings.
 - `filters.include_evidence_sources` / `exclude_evidence_sources`:
@@ -100,8 +115,9 @@ question when any listed value matches. All filter categories are ANDed, and
 ```
 
 Convenience overrides are available for `--system`, `--limit`, `--random`,
-`--case`, `--include-evidence-source`, and `--exclude-evidence-source`. The
-last two add to the selected profile's source filters.
+`--case`, `--include-doc-type`, `--exclude-doc-type`,
+`--include-evidence-source`, and `--exclude-evidence-source`. The override
+filters add to the selected profile's filters.
 
 ## Execution and results
 

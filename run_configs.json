@@ -36,6 +36,19 @@
           "Chart"
         ]
       }
+    },
+    "scientific": {
+      "description": "Questions from research reports and introductions.",
+      "systems": [
+        "paperqa",
+        "codex"
+      ],
+      "filters": {
+        "include_doc_types": [
+          "Research report / Introduction",
+          "Academic paper"
+        ]
+      }
     }
   }
 }

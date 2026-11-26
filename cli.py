@@ -61,6 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, help="Maximum number of filtered questions")
     parser.add_argument("--random", action="store_true",
                         help="Randomly reorder matching questions before applying --limit")
+    parser.add_argument("--include-doc-type", action="append", default=[],
+                        help="Keep cases with this exact document type (repeatable)")
+    parser.add_argument("--exclude-doc-type", action="append", default=[],
+                        help="Skip cases with this exact document type (repeatable)")
     parser.add_argument("--include-evidence-source", action="append", default=[],
                         help="Keep cases whose evidence sources contain this text (repeatable)")
     parser.add_argument("--exclude-evidence-source", action="append", default=[],
@@ -86,9 +90,16 @@ def main(argv: list[str] | None = None) -> int:
             config = replace(config, limit=args.limit)
         if args.random:
             config = replace(config, randomize=True)
-        if args.include_evidence_source or args.exclude_evidence_source:
+        if (
+            args.include_doc_type or args.exclude_doc_type
+            or args.include_evidence_source or args.exclude_evidence_source
+        ):
             filters = replace(
                 config.filters,
+                include_doc_types=config.filters.include_doc_types
+                + tuple(args.include_doc_type),
+                exclude_doc_types=config.filters.exclude_doc_types
+                + tuple(args.exclude_doc_type),
                 include_evidence_sources=config.filters.include_evidence_sources
                 + tuple(args.include_evidence_source),
                 exclude_evidence_sources=config.filters.exclude_evidence_sources
@@ -117,9 +128,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         for case in cases:
             sources = ", ".join(case.evidence_sources) or "none"
+            doc_type = case.doc_type or "unknown"
             print(
                 f"{case.id:20} {case.document} | {case.question} | "
-                f"{case.reference_answer} | sources={sources}"
+                f"{case.reference_answer} | type={doc_type} | sources={sources}"
             )
         print(
             f"Profile {config.name}: validated {len(cases)} PDF paths and "

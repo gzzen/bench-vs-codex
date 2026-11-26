@@ -32,6 +32,8 @@ class RunFilters:
     case_ids: tuple[str, ...] = ()
     include_documents: tuple[str, ...] = ()
     exclude_documents: tuple[str, ...] = ()
+    include_doc_types: tuple[str, ...] = ()
+    exclude_doc_types: tuple[str, ...] = ()
     include_question_contains: tuple[str, ...] = ()
     exclude_question_contains: tuple[str, ...] = ()
     include_evidence_sources: tuple[str, ...] = ()
@@ -229,6 +231,12 @@ def _matches_any(values: tuple[str, ...] | list[str], needles: tuple[str, ...]) 
 
 
 def filter_cases(cases: list[Case], filters: RunFilters) -> list[Case]:
+    include_doc_types = {
+        value.casefold() for value in filters.include_doc_types
+    }
+    exclude_doc_types = {
+        value.casefold() for value in filters.exclude_doc_types
+    }
     selected = []
     for case in cases:
         if filters.case_ids and case.id not in filters.case_ids:
@@ -240,6 +248,11 @@ def filter_cases(cases: list[Case], filters: RunFilters) -> list[Case]:
         if filters.exclude_documents and case.document.casefold() in {
             value.casefold() for value in filters.exclude_documents
         }:
+            continue
+        doc_type = case.doc_type.casefold() if case.doc_type is not None else None
+        if include_doc_types and doc_type not in include_doc_types:
+            continue
+        if exclude_doc_types and doc_type in exclude_doc_types:
             continue
         if filters.include_question_contains and not _matches_any(
             [case.question], filters.include_question_contains

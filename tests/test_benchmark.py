@@ -141,6 +141,12 @@ class BenchmarkTests(unittest.TestCase):
                     "random": True,
                     "filters": {"include_evidence_sources": ["Table"]},
                 },
+                "reports": {
+                    "filters": {"include_doc_types": ["report"]},
+                },
+                "no-brochures": {
+                    "filters": {"exclude_doc_types": ["BROCHURE"]},
+                },
             }}), encoding="utf-8")
             config = load_run_config(config_path, "no-visuals")
             self.assertEqual(config.systems, ("codex",))
@@ -151,6 +157,16 @@ class BenchmarkTests(unittest.TestCase):
             self.assertTrue(table_config.randomize)
             table_cases = filter_cases(cases, table_config.filters)
             self.assertEqual([case.id for case in table_cases], ["mmlongbench-0003"])
+            reports_config = load_run_config(config_path, "reports")
+            report_cases = filter_cases(cases, reports_config.filters)
+            self.assertEqual([case.id for case in report_cases], [
+                "mmlongbench-0001", "mmlongbench-0002",
+            ])
+            no_brochures_config = load_run_config(config_path, "no-brochures")
+            no_brochure_cases = filter_cases(cases, no_brochures_config.filters)
+            self.assertEqual([case.id for case in no_brochure_cases], [
+                "mmlongbench-0001", "mmlongbench-0002",
+            ])
 
     def test_dataset_dry_run_uses_profile(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -197,6 +213,16 @@ class BenchmarkTests(unittest.TestCase):
             self.assertIn("Chart?", output.getvalue())
             self.assertNotIn("Plain text?", output.getvalue())
             self.assertIn("selection=random", output.getvalue())
+
+            with redirect_stdout(output := io.StringIO()):
+                status = main([
+                    "--data", str(data), "--config", str(config),
+                    "--profile", "all", "--include-doc-type", "report", "--dry-run",
+                ])
+            self.assertEqual(status, 0)
+            self.assertIn("Plain text?", output.getvalue())
+            self.assertIn("Chart?", output.getvalue())
+            self.assertIn("type=Report", output.getvalue())
 
     def test_select_cases_randomizes_before_limit(self):
         cases = [
